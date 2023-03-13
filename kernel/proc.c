@@ -30,16 +30,18 @@ procinit(void)
   initlock(&pid_lock, "nextpid");
   for(p = proc; p < &proc[NPROC]; p++) {
       initlock(&p->lock, "proc");
+      //! 删除这里映射到gobal kernel pagetable kstack上的代码
 
       // Allocate a page for the process's kernel stack.
       // Map it high in memory, followed by an invalid
       // guard page.
-      char *pa = kalloc();
-      if(pa == 0)
-        panic("kalloc");
-      uint64 va = KSTACK((int) (p - proc));
-      kvmmap(va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
-      p->kstack = va;
+
+      // char *pa = kalloc();
+      // if(pa == 0)
+      //   panic("kalloc");
+      // uint64 va = KSTACK((int) (p - proc));
+      // kvmmap(va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
+      // p->kstack = va;
   }
   kvminithart();
 }
@@ -121,6 +123,15 @@ found:
     return 0;
   }
 
+  //! kstack的pa映射到每个进程的kernel pagetable的va
+  p->kernel_pagetable = prockpgt();
+  char *pa = kalloc();
+  if(pa == 0)
+    panic("proc kalloc");
+  uint64 va = KSTACK((int) (p - proc));
+  prockvmmap(p->kernel_pagetable, va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
+  p->kstack = va;
+
   // Set up new context to start executing at forkret,
   // which returns to user space.
   memset(&p->context, 0, sizeof(p->context));
@@ -149,6 +160,20 @@ freeproc(struct proc *p)
   p->chan = 0;
   p->killed = 0;
   p->xstate = 0;
+  // p->state = UNUSED;
+  if (p->kstack) {
+    pte_t* pte = walk(p->kernel_pagetable, p->kstack, 0);
+    if (pte == 0) {
+      panic("proc kstack walk");
+    }
+    kfree((void*)PTE2PA(*pte));
+  }
+  p->kstack = 0;
+  if (p->kernel_pagetable) {
+    //! 这里使用自己定义的函数(避免panic leaf)
+    free_procwalk(p->kernel_pagetable);
+  }
+  p->kernel_pagetable = 0;
   p->state = UNUSED;
 }
 
@@ -207,6 +232,25 @@ uchar initcode[] = {
   0x00, 0x00, 0x00, 0x00
 };
 
+//! 进程的user pagetable 映射到 kernel pagetable
+int
+procPgtMapping(pagetable_t userPagetable, pagetable_t kernelPagetable, int start, int sz)
+{
+  uint64 i, pa;
+  pte_t *pte, *kpte;
+  uint flag;
+  for (i = PGROUNDUP(start); i < start + sz; i += PGSIZE) {
+    if((pte = walk(userPagetable, i, 0)) == 0)
+      panic("mapping: pte should exist");
+    if((kpte = walk(kernelPagetable, i, 1)) == 0)
+      panic("mapping: Kpte should exist");
+    pa = PTE2PA(*pte);
+    flag = PTE_FLAGS(*pte) & ~PTE_U;
+    *kpte = PA2PTE(pa) | flag;
+  }
+  return 0;
+}
+
 // Set up first user process.
 void
 userinit(void)
@@ -224,7 +268,8 @@ userinit(void)
   // prepare for the very first "return" from kernel to user.
   p->trapframe->epc = 0;      // user program counter
   p->trapframe->sp = PGSIZE;  // user stack pointer
-
+  //! proc init时, 将page table 映射到 kernel pagetable(0~sz)
+  procPgtMapping(p->pagetable, p->kernel_pagetable, 0, p->sz);
   safestrcpy(p->name, "initcode", sizeof(p->name));
   p->cwd = namei("/");
 
@@ -246,6 +291,7 @@ growproc(int n)
     if((sz = uvmalloc(p->pagetable, sz, sz + n)) == 0) {
       return -1;
     }
+    procPgtMapping(p->pagetable, p->kernel_pagetable, sz - n, n);
   } else if(n < 0){
     sz = uvmdealloc(p->pagetable, sz, sz + n);
   }
@@ -266,7 +312,6 @@ fork(void)
   if((np = allocproc()) == 0){
     return -1;
   }
-
   // Copy user memory from parent to child.
   if(uvmcopy(p->pagetable, np->pagetable, p->sz) < 0){
     freeproc(np);
@@ -288,6 +333,8 @@ fork(void)
     if(p->ofile[i])
       np->ofile[i] = filedup(p->ofile[i]);
   np->cwd = idup(p->cwd);
+
+  procPgtMapping(np->pagetable, np->kernel_pagetable, 0, p->sz);
 
   safestrcpy(np->name, p->name, sizeof(p->name));
 
@@ -473,7 +520,13 @@ scheduler(void)
         // before jumping back to us.
         p->state = RUNNING;
         c->proc = p;
+        //! 当进程running状态, 使用进程 kernel pagetable
+        w_satp(MAKE_SATP(p->kernel_pagetable));
+        sfence_vma();
         swtch(&c->context, &p->context);
+
+        //! 当进程处于unused时, 使用gobal kernel pagetable
+        kvminithart();
 
         // Process is done running for now.
         // It should have changed its p->state before coming back.
