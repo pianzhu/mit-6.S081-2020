@@ -8,7 +8,7 @@
 
 struct spinlock tickslock;
 uint ticks;
-
+// extern pte_t* walk(pagetable_t, uint64, int);
 extern char trampoline[], uservec[], userret[];
 
 // in kernelvec.S, calls kerneltrap().
@@ -65,9 +65,34 @@ usertrap(void)
     intr_on();
 
     syscall();
-  } else if((which_dev = devintr()) != 0){
+  }
+  else if((which_dev = devintr()) != 0){
     // ok
-  } else {
+  }
+  else if (r_scause() == 15 || r_scause() == 13) {
+    uint64 stval = r_stval();
+    uint64 sz = p->sz;
+    char *mem;
+    if (stval < sz && stval >= PGROUNDUP(p->trapframe->sp)) {
+      mem = kalloc();
+      //! 这里要直接退出，返回异常，如果物理地址为0，mappage会进入kernel trap
+      if(mem == 0) {
+        // printf("usertrap(): kalloc() failed\n");
+        p->killed = 1;
+        exit(-1);
+      }
+      memset(mem, 0, PGSIZE);
+      if(mappages(p->pagetable, PGROUNDDOWN(stval), PGSIZE, (uint64)mem, PTE_X|PTE_W|PTE_R|PTE_U) != 0){
+        printf("usertrap(): mappages() failed\n");
+        kfree(mem);
+        p->killed = 1;
+      }
+    }
+    else {
+      p->killed = 1;
+    }
+  } 
+  else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
     p->killed = 1;

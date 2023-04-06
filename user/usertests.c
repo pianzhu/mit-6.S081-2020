@@ -1508,6 +1508,7 @@ bigdir(char *s)
     name[2] = '0' + (i % 64);
     name[3] = '\0';
     if(link("bd", name) != 0){
+      // printf("DEBUG:%p", link("bd", name));
       printf("%s: bigdir link(bd, %s) failed\n", s, name);
       exit(1);
     }

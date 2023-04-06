@@ -68,6 +68,28 @@ int
 argaddr(int n, uint64 *ip)
 {
   *ip = argraw(n);
+  struct proc* p = myproc();
+  uint64 sz = p->sz;
+  char *mem;
+  //! 这里是处理system call的lazy allocation的方法
+  //! 处理pagetable的一级、二级、三级pte中是否vaild位为0的 
+  if (walkaddr(p->pagetable, *ip) == 0) {
+    if (*ip < sz && *ip >= PGROUNDUP(p->trapframe->sp)) {
+      mem = kalloc();
+      if(mem == 0) {
+        return -1;
+      }
+      memset(mem, 0, PGSIZE);
+      if(mappages(p->pagetable, PGROUNDDOWN(*ip), PGSIZE, (uint64)mem, PTE_W|PTE_R|PTE_X|PTE_U) != 0){
+        kfree(mem);
+        return -1;
+      }
+    }
+    else {
+      // printf("ERROR");
+      return -1;
+    }
+  }
   return 0;
 }
 
