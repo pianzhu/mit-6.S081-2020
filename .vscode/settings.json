@@ -1,0 +1,8 @@
+{
+    "editor.fontFamily": "Consolas, 'Courier New', monospace",
+    "files.associations": {
+        "riscv.h": "c",
+        "fs.h": "c",
+        "defs.h": "c"
+    }
+}
